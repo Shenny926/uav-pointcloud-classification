@@ -129,27 +129,77 @@ Plus: absolute z, intensity, and a color feature (varies by version, see below).
 | v2 | globally normalized | 94% | 6.6% |
 | v3 | locally relative | 91% | 1.4% |
 
-**Current working conclusion:** v1 is the primary result. v2/v3 are documented robustness
-investigations demonstrating that cross-epoch radiometric shift is not trivially correctable —
-each principled fix failed for an explainable reason. This directly answers the assignment's
-"differences in results" question and is report material, not wasted work.
+**Working conclusion (superseded — see Final Version below):** v1/v2/v3 together are the
+debugging narrative: v1 as the initial attempt, v2/v3 as documented robustness investigations
+demonstrating that cross-epoch radiometric shift is not trivially correctable — each principled
+fix failed for an explainable reason. This directly answers the assignment's "differences in
+results" question and is report material, not wasted work. The best-performing model is now the
+Final Version below; v1/v2/v3 remain the "why it's hard" story.
+
+---
+
+## Final Version (`final_version/`)
+
+Built by Nicolas, added to the repo after the v1–v3 debugging above. Same core idea (Random
+Forest on combined 2024/2025 labeled data, applied to 2026) but a different strategy for the
+color-shift problem: instead of picking one recalibrated greenness definition, it feeds the
+model several complementary signals at once and corrects for the known vegetation
+under-prediction bias at the decision stage rather than only at the feature stage.
+
+**Scripts:**
+
+| Script | Purpose |
+|---|---|
+| `final_version/build_training_data.py` | Same role as the root script — loads and tags the 6 per-class files |
+| `final_version/subsample_training_data.py` | Same role as the root script — 300k/class subsample |
+| `final_version/featureextractv3.py` | **13 features**, not 9 — see below. K=30 (not 20) |
+| `final_version/classifierv3for2026.py` | Trains + applies the model, with probability-threshold tuning and spatial filtering |
+| `final_version/evaluate_classifier.py` | Matches a classified cloud against the labeled 2026 reference files by coordinate → real accuracy/confusion matrix (not yet run — see Known gaps) |
+
+⚠️ **Naming collision:** `featureextractv3.py` and `classifierv3for2026.py` exist both at repo
+root (our own v3 attempt) and inside `final_version/` (Nicolas'). They are different files with
+different logic — the root versions are the "local relative greenness" attempt documented above;
+the `final_version/` ones are the final approach. Don't confuse them when reading the repo.
+
+**Feature set (13, vs. our 9):**
+- `z_robust`, `intensity_robust` — robust-scaled (median/IQR) instead of raw
+- The same 5 PCA geometric descriptors we used (linearity, planarity, sphericity, verticality, roughness) + height_range
+- `height_above_local_min` — height above the lowest point in the local neighborhood, replacing raw elevation. This is the fix for the height-above-ground item in the old Next Steps list.
+- **Four color signals instead of one:** `green_ratio` (same formula as our v1 greenness), `excess_green` (2G−R−B chromaticity index, standard in remote sensing), `local_mean_green`, `local_greenness` (our v3 idea, kept as a supplementary feature rather than a replacement)
+
+**Decision-level changes (not just features):**
+- Uses `predict_proba` with a tuned vegetation threshold (0.40, not the default 0.5 argmax) — deliberately biases toward catching more vegetation
+- 3D voxel-based spatial majority filter as post-processing (cleans up speckle noise) — requires `spatial_filter.py`, see Known gaps
+
+**Result: 2026 prediction — building 18.3% / road 31.9% / vegetation 49.8%** — matches the
+site's real composition, a large improvement over v1's 10.7% and v2/v3's worse results.
+
+**Why it worked where v1–v3 didn't:** v1 already included both color and elevation, but put
+~35% of its decision weight on a single greenness feature and used raw absolute elevation —
+a single point of failure. This version gives the model several independent, complementary
+signals instead of one, plus explicitly corrects the known bias at the decision threshold. See
+the LaTeX report (`classifier_report.tex`) for the full writeup.
+
+**Known gaps:**
+- `spatial_filter.py` (the `voxel_majority` function `classifierv3for2026.py` imports) was not
+  provided and is not in this repo. Running the script as-is will fail on that import until we
+  get it from Nicolas.
+- `evaluate_classifier.py` exists but has not actually been run yet — the 49.8% figure above is
+  the predicted class proportion, not a verified accuracy against the labeled 2026 ground truth.
+  Running this script is the top item in Next Steps below.
 
 ---
 
 ## Next steps (priority order)
 
-1. **Evaluate against 2026 ground truth.** We have manually segmented 2026 per-class files.
-   Match points between the raw 2026 cloud and the per-class files (by coordinates), build a
-   true confusion matrix + per-class accuracy for v1/v2/v3 on 2026. Needed for the report
-   regardless; replaces guessing from class percentages.
-2. **Height-above-ground (HAG) feature.** Absolute z partially memorizes site layout.
-   Estimate local ground surface (e.g. lowest points per grid cell), compute each point's
-   height above it. Encodes the real structure: HAG ≈ 0 → road/grass; HAG > ~3 m → roof or
-   tree crown. Most promising fix for building↔vegetation confusion.
-3. **Spatial regularization (majority filter).** Post-process predictions: reassign each point
-   to the majority label among its k neighbors. Cheap (neighbor indices already computed),
-   removes salt-and-pepper noise visible in CloudCompare. Limitation: won't fix coherent
-   block errors (whole crown labeled as building).
+1. **Run `final_version/evaluate_classifier.py` against 2026 ground truth.** Now the top
+   priority — the 49.8% vegetation figure is a predicted proportion, not a verified accuracy.
+   The script already exists and matches points against the labeled 2026 per-class files by
+   coordinate; it just hasn't been executed yet. Would give a real confusion matrix and
+   per-class accuracy for the final model, and ideally for v1/v2/v3 too for a fair comparison.
+2. ~~Height-above-ground (HAG) feature~~ — **done** in `final_version/` (`height_above_local_min`).
+3. ~~Spatial regularization (majority filter)~~ — **done** in `final_version/` (voxel majority
+   filter), but blocked on the missing `spatial_filter.py` dependency — get this from Nicolas.
 4. **Optional / report comparisons:**
    - Train on 2024-only vs 2025-only vs combined → the "different training datasets" axis
      of the assignment objective.
